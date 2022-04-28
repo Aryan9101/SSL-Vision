@@ -1,4 +1,4 @@
 /__pycache__
 /data
-/mae_results
+*.png
 *.pth
