@@ -152,7 +152,7 @@ for epoch in range(num_epochs):
                     'num_epochs' : num_epochs,
                     'weight_decay' : weight_decay,
                     'warmup_fraction' : warmup_fraction},
-                   f"./SSL-Vision/mae_timm-2.pth" 
+                   f"./SSL-Vision/mae_timm.pth" 
                   )
     
     if epoch + 1 % 25 == 0:
@@ -177,7 +177,7 @@ for epoch in range(num_epochs):
             for i, ax in enumerate(axes[2::3]):
                 ax.imshow(reconstructed[i].numpy())
             fig.tight_layout()
-            fig.savefig(f"./SSL-Vision/mae_results-2/epoch_{epoch + 1}.png")
+            fig.savefig(f"./SSL-Vision/mae_results/epoch_{epoch + 1}.png")
             plt.close(fig)
     
     wandb.log({"train_loss": train_loss, "test_loss": test_loss, "lr": scheduler.get_lr(), "epoch": epoch + 1})
