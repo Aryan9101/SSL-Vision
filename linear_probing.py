@@ -6,15 +6,13 @@ import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Dataset
 
-from sklearn.manifold import TSNE
-from sklearn.decomposition import PCA
-import seaborn as sns
-import numpy as np
-
 import tqdm
-import gc
 
 from models import MAE_Classifier, MAE_Timm
+
+import wandb
+
+wandb.init(project="ssl-vision", entity="aryan9101")
 
 if torch.cuda.is_available():
     device = torch.device("cuda:0")
@@ -74,7 +72,7 @@ mae = MAE_Timm(patch_dim, image_dim,
                dropout, device).to(device)
 mae.load_state_dict(checkpoint['vit_state_dict'])
 
-mae_classifier = MAE_Classifier(encoder_embed_dim, len(classes)).to(device)
+mae_classifier = MAE_Classifier(mae, encoder_embed_dim, len(classes)).to(device)
 
 learning_rate = 1e-3
 num_epochs = 10
@@ -82,7 +80,6 @@ num_epochs = 10
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.AdamW(mae_classifier.parameters(), lr=learning_rate)
 
-mae.eval()
 train_losses = []
 test_losses = []
 for epoch in range(num_epochs):
@@ -95,9 +92,7 @@ for epoch in range(num_epochs):
         labels = labels.to(device)
 
         optimizer.zero_grad()
-        with torch.no_grad():
-            embeds = mae.embeddings(inputs)
-        _, outputs = mae_classifier(embeds)
+        _, outputs = mae_classifier(inputs)
         loss = criterion(outputs, labels.long())
         loss.backward()
         optimizer.step()
@@ -118,8 +113,7 @@ for epoch in range(num_epochs):
             inputs = inputs.to(device)
             labels = labels.to(device)
 
-            embeds = mae.embeddings(inputs)
-            _, outputs = mae_classifier(embeds)
+            _, outputs = mae_classifier(inputs)
             loss = criterion(outputs, labels.long())
 
             test_loss += loss.item() * inputs.shape[0]
@@ -131,38 +125,6 @@ for epoch in range(num_epochs):
     
     print(f'[{epoch + 1:2d}] train loss: {train_loss:.3f} | train accuracy: {train_acc:.3f} | test_loss: {test_loss:.3f} | test_accuracy: {test_acc:.3f}')
 
-    if min(test_losses[-4:]) > min(test_losses):
-        break
+    wandb.log({"train_loss": train_loss, "test_loss": test_loss, "train_accuracy": train_acc, "test_accuracy": test_acc, "epoch": epoch + 1})
 
 print('Finished Training')
-
-gc.collect()
-with torch.no_grad():
-    mae_latent_train = torch.zeros(len(trainset), encoder_embed_dim)
-    mae_labels_train = torch.zeros(len(trainset))
-    for i, (inputs, labels) in enumerate(trainloader):
-        embeds = mae.embeddings(inputs.to(device))
-        latent, _ = mae_classifier(embeds)
-        mae_latent_train[i*batch_size:(i+1)*batch_size] = latent
-        mae_labels_train[i*batch_size:(i+1)*batch_size] = labels
-    mae_latent_test = torch.zeros(len(testset), encoder_embed_dim)
-    mae_labels_test = torch.zeros(len(testset))
-    for i, (inputs, labels) in enumerate(testloader):
-        embeds = mae.embeddings(inputs.to(device))
-        latent, _ = mae_classifier(embeds)
-        mae_latent_test[i*batch_size:(i+1)*batch_size] = latent
-        mae_labels_test[i*batch_size:(i+1)*batch_size] = labels
-
-print("Collected normalized MAE representations.")
-
-mae_latent = torch.cat([mae_latent_train, mae_latent_test])
-mae_labels = torch.cat([mae_labels_train, mae_labels_test])
-
-mae_pca = PCA(n_components=128).fit_transform(mae_latent)
-mae_embedded = TSNE(n_components=2, perplexity=50, learning_rate='auto', init='random').fit_transform(mae_pca)
-mae_class_labels = np.take(np.array(classes), mae_labels.numpy().astype(int))
-tsne_plot = sns.scatterplot(x=mae_embedded[:, 0], y=mae_embedded[:, 1], hue=mae_class_labels)
-fig = tsne_plot.get_figure()
-fig.savefig("./SSL-Vision/mae_results/tsne.png") 
-
-print("T-SNE visualization available.")

@@ -243,11 +243,17 @@ class MAE_Timm(nn.Module):
         return embeddings
 
 class MAE_Classifier(nn.Module):
-    def __init__(self, embed_dim, num_classes):
+    def __init__(self, mae, embed_dim, num_classes, fine_tune=False):
         super().__init__()
+        self.mae = mae
+        self.mae.eval()
         self.bn = nn.BatchNorm1d(embed_dim)
         self.linear = nn.Linear(embed_dim, num_classes)
+        if not fine_tune:
+            for parameter in self.mae.parameters():
+                parameter.requires_grad = False
     
-    def forward(self, x):
-        latent = self.bn(x)
+    def forward(self, images):
+        mae_embeds = self.mae.embeddings(images)
+        latent = self.bn(mae_embeds)
         return latent, self.linear(latent)
