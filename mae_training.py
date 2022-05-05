@@ -1,8 +1,3 @@
-# Log on WandB
-# Compare hyperparameters with those online
-# Try ffcv with resnet-9 and verify claims
-
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -29,26 +24,6 @@ if torch.cuda.is_available():
 else:
     device = torch.device("cpu")
     print("Running on a CPU")
-
-
-# MAE config
-patch_dim = 2
-image_dim = 32
-encoder_num_layers = 12
-encoder_num_heads = 3
-encoder_embed_dim = 192
-encoder_mlp_hidden = 768
-decoder_num_layers = 4
-decoder_num_heads = 3
-decoder_embed_dim = 192
-decoder_mlp_hidden = 768
-dropout = 0.0
-mask_ratio = 0.75
-
-mae = MAE_Timm(patch_dim, image_dim, 
-               encoder_num_layers, encoder_num_heads, encoder_embed_dim,
-               decoder_num_heads, decoder_num_layers, decoder_embed_dim,
-               dropout, device).to(device)
 
 cifar10_mean = torch.tensor([0.49139968, 0.48215827, 0.44653124])
 cifar10_std = torch.tensor([0.24703233, 0.24348505, 0.26158768])
@@ -78,18 +53,33 @@ trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_work
 testset = Cifar10Dataset(False)
 testloader = DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=2)
 
-classes = ('plane', 'car', 'bird', 'cat',
-           'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
+# MAE config
+patch_dim = 2
+image_dim = 32
+encoder_num_layers = 12
+encoder_num_heads = 3
+encoder_embed_dim = 192
+encoder_mlp_hidden = 768
+decoder_num_layers = 4
+decoder_num_heads = 3
+decoder_embed_dim = 192
+decoder_mlp_hidden = 768
+dropout = 0.0
+mask_ratio = 0.75
+
+mae = MAE_Timm(patch_dim, image_dim, 
+               encoder_num_layers, encoder_num_heads, encoder_embed_dim,
+               decoder_num_heads, decoder_num_layers, decoder_embed_dim,
+               dropout, device).to(device)
 
 learning_rate = 1.5e-4 * batch_size / 256
-num_epochs = 2000
+num_epochs = 500
 warmup_fraction = 0.1
 weight_decay = 0.05
 
-# total_steps = (len(trainset) // batch_size) * num_epochs
+# total_steps = math.ceil(len(trainset) / batch_size) * num_epochs
 total_steps = num_epochs
 warmup_steps = total_steps * warmup_fraction
-decay_steps = total_steps - warmup_steps
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.AdamW(mae.parameters(), lr=learning_rate, betas=(0.9, 0.95), weight_decay=weight_decay)
 scheduler = transformers.get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, 
@@ -152,10 +142,10 @@ for epoch in range(num_epochs):
                     'num_epochs' : num_epochs,
                     'weight_decay' : weight_decay,
                     'warmup_fraction' : warmup_fraction},
-                   f"./SSL-Vision/mae_timm.pth" 
+                   f"./SSL-Vision/mae_timm-2.pth" 
                   )
     
-    if epoch + 1 % 25 == 0:
+    if (epoch + 1) % 25 == 0:
         with torch.no_grad():
             image_samples, _ = next(iter(testloader))
             masked_images, reconstructed = mae.recover_reconstructed(image_samples.to(device), mask_ratio)
@@ -177,7 +167,7 @@ for epoch in range(num_epochs):
             for i, ax in enumerate(axes[2::3]):
                 ax.imshow(reconstructed[i].numpy())
             fig.tight_layout()
-            fig.savefig(f"./SSL-Vision/mae_results/epoch_{epoch + 1}.png")
+            fig.savefig(f"./SSL-Vision/mae_results-2/epoch_{epoch + 1}.png")
             plt.close(fig)
     
     wandb.log({"train_loss": train_loss, "test_loss": test_loss, "lr": scheduler.get_lr(), "epoch": epoch + 1})

@@ -16,7 +16,7 @@ else:
     device = torch.device("cpu")
     print("Running on a CPU")
 
-checkpoint = torch.load(f"./SSL-Vision/mae_timm.pth")
+checkpoint = torch.load(f"./SSL-Vision/mae_timm-2.pth")
 patch_dim = checkpoint['patch_dim']
 image_dim = checkpoint['image_dim']
 encoder_num_layers = checkpoint['encoder_num_layers']
@@ -85,5 +85,5 @@ for i, ax in enumerate(axes[3::4]):
     ax.imshow(recon_no_mask[i].numpy())
     ax.axis('off')
 fig.tight_layout()
-fig.savefig(f"./SSL-Vision/mae_results/test.png")
+fig.savefig(f"./SSL-Vision/mae_results-2/test.png")
 plt.close(fig)

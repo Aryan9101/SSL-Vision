@@ -1,7 +1,11 @@
+"""
+Code based on the official MAE Implementation available at:
+https://github.com/facebookresearch/mae
+"""
+
 import torch
 import torch.nn as nn
 
-from timm.models.layers import trunc_normal_
 from timm.models.vision_transformer import PatchEmbed, Block
 
 class ViTLayer(nn.Module):
@@ -49,13 +53,13 @@ class ViT(nn.Module):
 
     def forward(self, images):
         h = w = self.image_dim // self.patch_dim
-        N = images.shape[0]        
+        N = images.size(0)
         images = images.reshape(N, 3, h, self.patch_dim, w, self.patch_dim)
         images = torch.einsum("nchpwq -> nhwpqc", images)
         patches = images.reshape(N, h * w, self.input_dim)
 
         patch_embeddings = self.patch_embedding(patches)
-        patch_embeddings = torch.cat([torch.tile(self.cls_token, (N, 1, 1)), 
+        patch_embeddings = torch.cat([torch.tile(self.cls_token, (N, 1, 1)),
                                       patch_embeddings], dim=1)
         out = patch_embeddings + torch.tile(self.position_embedding, (N, 1, 1))
         out = self.embedding_dropout(out)
@@ -63,7 +67,7 @@ class ViT(nn.Module):
         for i in range(self.num_layers):
             out = self.encoder_layers[i](out)
 
-        cls_head = self.layernorm(torch.squeeze(out[:, 0, :], dim=1))
+        cls_head = self.layernorm(torch.squeeze(out[:, 0], dim=1))
         logits = self.mlp_head(cls_head)
         return logits
 
@@ -76,7 +80,7 @@ class MAE_Timm(nn.Module):
         self.device = device
         self.patch_dim = patch_dim
         self.image_dim = image_dim
-        self.num_patches = (image_dim // patch_dim) ** 2
+        self.num_patches = (image_dim // patch_dim) * (image_dim // patch_dim)
         self.input_dim = self.patch_dim * self.patch_dim * 3
 
         self.patch_embedding = PatchEmbed(self.image_dim, self.patch_dim, 3, encoder_embed_dim)
@@ -143,13 +147,12 @@ class MAE_Timm(nn.Module):
         
         keep = int(self.num_patches * (1 - mask_ratio))
         
-        patch_embeddings = torch.gather(patch_embeddings, dim=1, index=idx_shuffle.unsqueeze(-1).tile(1, 1, D))[:, :keep]
-
         mask = torch.ones(N, self.num_patches).to(self.device)
         mask[:, keep:] = 0
         mask = torch.gather(mask, dim=1, index=idx_unshuffle)
 
-        class_tokens = torch.tile(self.cls_token, (N, 1, 1)) + self.encoder_position_embedding[:, :1]
+        patch_embeddings = torch.gather(patch_embeddings, dim=1, index=idx_shuffle.unsqueeze(-1).tile(1, 1, D))[:, :keep]
+        class_tokens = torch.tile(self.cls_token + + self.encoder_position_embedding[:, :1], (N, 1, 1))
         out = torch.cat([class_tokens, patch_embeddings], dim=1)
 
         for i in range(self.encoder_num_layers):
@@ -179,16 +182,17 @@ class MAE_Timm(nn.Module):
         return image_patches
 
     def loss(self, images, pred_patches, mask):
+        # Normalizing image pixels apparently leads to better representations
         patches = self.patchify(images)
         mean = patches.mean(dim=-1, keepdim=True)
         var = patches.var(dim=-1, keepdim=True)
         patches = (patches - mean) / (var + 1.e-6)**.5
 
         loss = (patches - pred_patches) ** 2
-        loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
+        loss = loss.mean(dim=-1)
 
         mask = 1 - mask
-        loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
+        loss = (loss * mask).sum() / mask.sum()
         return loss
 
     def recover_reconstructed(self, images, mask_ratio):
@@ -210,7 +214,7 @@ class MAE_Timm(nn.Module):
         mean = image_patches.mean(dim=-1, keepdim=True)
         var = image_patches.var(dim=-1, keepdim=True)
         reconstructed = pred_patches * (var + 1.e-6)**.5 + mean
-        # reconstructed = mask * image_patches + (1 - mask) * pred_patches
+        # reconstructed = mask * image_patches + (1 - mask) * reconstructed
         reconstructed = reconstructed.reshape(N, h, w, self.patch_dim, self.patch_dim, 3)
         reconstructed = torch.einsum("nhwpqc -> nchpwq", reconstructed).reshape(N, 3, self.image_dim, self.image_dim)
 
@@ -222,3 +226,28 @@ class MAE_Timm(nn.Module):
         loss = self.loss(images, pred_patches, mask)
 
         return loss
+
+    def embeddings(self, images):
+        patch_embeddings = self.patch_embedding(images) + self.encoder_position_embedding[:, 1:]
+        N, _, _ = patch_embeddings.shape
+
+        class_tokens = torch.tile(self.cls_token + self.encoder_position_embedding[:, :1], (N, 1, 1))
+        out = torch.cat([class_tokens, patch_embeddings], dim=1)
+
+        for i in range(self.encoder_num_layers):
+            out = self.encoder_layers[i](out)
+
+        out = self.encoder_layernorm(out)
+        embeddings = out[:, 0]
+
+        return embeddings
+
+class MAE_Classifier(nn.Module):
+    def __init__(self, embed_dim, num_classes):
+        super().__init__()
+        self.bn = nn.BatchNorm1d(embed_dim)
+        self.linear = nn.Linear(embed_dim, num_classes)
+    
+    def forward(self, x):
+        latent = self.bn(x)
+        return latent, self.linear(latent)

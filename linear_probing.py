@@ -6,13 +6,15 @@ import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Dataset
 
-import transformers
+from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
+import seaborn as sns
+import numpy as np
 
-import math
 import tqdm
+import gc
 
-from models import ViT
-from timm.models.vision_transformer import VisionTransformer
+from models import MAE_Classifier, MAE_Timm
 
 if torch.cuda.is_available():
     device = torch.device("cuda:0")
@@ -27,9 +29,6 @@ cifar10_std = torch.tensor([0.24703233, 0.24348505, 0.26158768])
 class Cifar10Dataset(Dataset):
     def __init__(self, train):
         self.transform = transforms.Compose([
-                                                transforms.Resize(40),
-                                                transforms.RandomCrop(32),
-                                                transforms.RandomHorizontalFlip(),                     
                                                 transforms.ToTensor(),
                                                 transforms.Normalize(cifar10_mean, cifar10_std)
                                             ])
@@ -55,50 +54,53 @@ testloader = DataLoader(testset, batch_size=batch_size, shuffle=False, num_worke
 classes = ('plane', 'car', 'bird', 'cat',
            'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
-# Timm ViT config
-patch_dim = 4
-image_dim = 32
-num_layers = 12
-num_heads = 6
-embed_dim = 384
-encoder_mlp_hidden = embed_dim * 4
-num_classes = len(classes)
-dropout = 0.1
+# MAE config
+checkpoint = torch.load(f"./SSL-Vision/mae_timm.pth")
+patch_dim = checkpoint['patch_dim']
+image_dim = checkpoint['image_dim']
+encoder_num_layers = checkpoint['encoder_num_layers']
+encoder_num_heads = checkpoint['encoder_num_heads']
+encoder_embed_dim = checkpoint['encoder_embed_dim']
+encoder_mlp_hidden = encoder_embed_dim * 4
+decoder_num_layers = checkpoint['decoder_num_layers']
+decoder_num_heads = checkpoint['decoder_num_heads']
+decoder_embed_dim = checkpoint['decoder_embed_dim']
+decoder_mlp_hidden = decoder_embed_dim * 4
+dropout = checkpoint['dropout']
 
-vit = VisionTransformer(img_size=image_dim, patch_size=patch_dim, in_chans=3, num_classes=num_classes, 
-                        embed_dim=embed_dim, depth=num_layers, num_heads=num_heads, mlp_ratio=4, qkv_bias=False, 
-                        drop_rate=dropout, attn_drop_rate=dropout).to(device)
-# vit = ViT(patch_dim, image_dim, num_layers, num_heads, embed_dim, encoder_mlp_hidden, num_classes, dropout).to(device)
+mae = MAE_Timm(patch_dim, image_dim, 
+               encoder_num_layers, encoder_num_heads, encoder_embed_dim,
+               decoder_num_heads, decoder_num_layers, decoder_embed_dim,
+               dropout, device).to(device)
+mae.load_state_dict(checkpoint['vit_state_dict'])
 
-learning_rate = 5e-4 * batch_size / 256
-num_epochs = 30
-warmup_fraction = 0.1
-weight_decay = 0.1
+mae_classifier = MAE_Classifier(encoder_embed_dim, len(classes)).to(device)
 
-total_steps = math.ceil(len(trainset) / batch_size) * num_epochs
-warmup_steps = total_steps * warmup_fraction
+learning_rate = 1e-3
+num_epochs = 10
+
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.AdamW(vit.parameters(), lr=learning_rate, betas=(0.9, 0.95), weight_decay=weight_decay)
-scheduler = transformers.get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, 
-                                                         num_training_steps=total_steps)
+optimizer = optim.AdamW(mae_classifier.parameters(), lr=learning_rate)
 
+mae.eval()
 train_losses = []
 test_losses = []
 for epoch in range(num_epochs):
     train_loss = 0.0
     train_acc = 0.0
     train_total = 0
-    vit.train()
+    mae_classifier.train()
     for inputs, labels in tqdm.tqdm(trainloader):
         inputs = inputs.to(device)
         labels = labels.to(device)
 
         optimizer.zero_grad()
-        outputs = vit(inputs)
+        with torch.no_grad():
+            embeds = mae.embeddings(inputs)
+        _, outputs = mae_classifier(embeds)
         loss = criterion(outputs, labels.long())
         loss.backward()
         optimizer.step()
-        scheduler.step()
 
         train_loss += loss.item() * inputs.shape[0]
         train_acc += torch.sum((torch.argmax(outputs, dim=1) == labels)).item()
@@ -110,13 +112,14 @@ for epoch in range(num_epochs):
     test_loss = 0.0
     test_acc = 0.0
     test_total = 0
-    vit.eval()
+    mae_classifier.eval()
     with torch.no_grad():
         for inputs, labels in testloader:
             inputs = inputs.to(device)
             labels = labels.to(device)
 
-            outputs = vit(inputs)
+            embeds = mae.embeddings(inputs)
+            _, outputs = mae_classifier(embeds)
             loss = criterion(outputs, labels.long())
 
             test_loss += loss.item() * inputs.shape[0]
@@ -131,22 +134,35 @@ for epoch in range(num_epochs):
     if min(test_losses[-4:]) > min(test_losses):
         break
 
-    if test_loss <= min(test_losses):
-        torch.save({'vit_state_dict' : vit.state_dict(), 
-                    'patch_dim' : patch_dim,
-                    'image_dim' : image_dim,
-                    'num_layers' : num_layers,
-                    'num_heads' : num_heads,
-                    'embed_dim' : embed_dim,
-                    'encoder_mlp_hidden' : encoder_mlp_hidden,
-                    'num_classes' : num_classes,
-                    'dropout' : dropout,
-                    'batch_size' : batch_size,
-                    'learning_rate' : learning_rate, 
-                    'num_epochs' : num_epochs,
-                    'weight_decay' : weight_decay,
-                    'warmup_fraction' : warmup_fraction},
-                   f"./SSL-Vision/vit_timm.pth" 
-                  )
-
 print('Finished Training')
+
+gc.collect()
+with torch.no_grad():
+    mae_latent_train = torch.zeros(len(trainset), encoder_embed_dim)
+    mae_labels_train = torch.zeros(len(trainset))
+    for i, (inputs, labels) in enumerate(trainloader):
+        embeds = mae.embeddings(inputs)
+        latent, _ = mae_classifier(embeds)
+        mae_latent_train[i*batch_size:(i+1)*batch_size] = latent
+        mae_labels_train[i*batch_size:(i+1)*batch_size] = labels
+    mae_latent_test = torch.zeros(len(testset), encoder_embed_dim)
+    mae_labels_test = torch.zeros(len(testset))
+    for i, (inputs, labels) in enumerate(testloader):
+        embeds = mae.embeddings(inputs)
+        latent, _ = mae_classifier(embeds)
+        mae_latent_test[i*batch_size:(i+1)*batch_size] = latent
+        mae_labels_test[i*batch_size:(i+1)*batch_size] = labels
+
+print("Collected normalized MAE representations.")
+
+mae_latent = torch.cat([mae_latent_train, mae_latent_test])
+mae_labels = torch.cat([mae_labels_train, mae_labels_test])
+
+mae_pca = PCA(n_components=128).fit_transform(mae_latent)
+mae_embedded = TSNE(n_components=2, perplexity=50, learning_rate='auto', init='random').fit_transform(mae_pca)
+mae_class_labels = np.take(np.array(classes), mae_labels.numpy().astype(int))
+tsne_plot = sns.scatterplot(x=mae_embedded[:, 0], y=mae_embedded[:, 1], hue=mae_class_labels)
+fig = tsne_plot.get_figure()
+fig.savefig("./SSL-Vision/mae_results/tsne.png") 
+
+print("T-SNE visualization available.")
