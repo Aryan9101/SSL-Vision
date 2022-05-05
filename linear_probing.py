@@ -141,14 +141,14 @@ with torch.no_grad():
     mae_latent_train = torch.zeros(len(trainset), encoder_embed_dim)
     mae_labels_train = torch.zeros(len(trainset))
     for i, (inputs, labels) in enumerate(trainloader):
-        embeds = mae.embeddings(inputs)
+        embeds = mae.embeddings(inputs.to(device))
         latent, _ = mae_classifier(embeds)
         mae_latent_train[i*batch_size:(i+1)*batch_size] = latent
         mae_labels_train[i*batch_size:(i+1)*batch_size] = labels
     mae_latent_test = torch.zeros(len(testset), encoder_embed_dim)
     mae_labels_test = torch.zeros(len(testset))
     for i, (inputs, labels) in enumerate(testloader):
-        embeds = mae.embeddings(inputs)
+        embeds = mae.embeddings(inputs.to(device))
         latent, _ = mae_classifier(embeds)
         mae_latent_test[i*batch_size:(i+1)*batch_size] = latent
         mae_labels_test[i*batch_size:(i+1)*batch_size] = labels
