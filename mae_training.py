@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tqdm
 
-from models import MAE_Timm
+from models import *
 
 import wandb
 
@@ -31,6 +31,8 @@ cifar10_std = torch.tensor([0.24703233, 0.24348505, 0.26158768])
 class Cifar10Dataset(Dataset):
     def __init__(self, train):
         self.transform = transforms.Compose([
+                                                transforms.RandomResizedCrop(size=32, scale=(0.2, 1.0), interpolation=3),
+                                                transforms.RandomHorizontalFlip(),
                                                 transforms.ToTensor(),
                                                 transforms.Normalize(cifar10_mean, cifar10_std)
                                             ])
@@ -45,7 +47,7 @@ class Cifar10Dataset(Dataset):
         img = self.transform(img)
         return img, label
 
-batch_size = 128
+batch_size = 128 * torch.cuda.device_count()
 
 trainset = Cifar10Dataset(True)
 trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=2)
@@ -53,27 +55,12 @@ trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_work
 testset = Cifar10Dataset(False)
 testloader = DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=2)
 
-# MAE config
-patch_dim = 2
-image_dim = 32
-encoder_num_layers = 12
-encoder_num_heads = 3
-encoder_embed_dim = 192
-encoder_mlp_hidden = 768
-decoder_num_layers = 4
-decoder_num_heads = 3
-decoder_embed_dim = 192
-decoder_mlp_hidden = 768
-dropout = 0.0
+mae = get_mae_base().to(device)
+mae = torch.nn.DataParallel(mae)
+
 mask_ratio = 0.75
-
-mae = MAE_Timm(patch_dim, image_dim, 
-               encoder_num_layers, encoder_num_heads, encoder_embed_dim,
-               decoder_num_heads, decoder_num_layers, decoder_embed_dim,
-               dropout, device).to(device)
-
 learning_rate = 1.5e-4 * batch_size / 256
-num_epochs = 500
+num_epochs = 400
 warmup_fraction = 0.1
 weight_decay = 0.05
 
@@ -97,7 +84,7 @@ for epoch in range(num_epochs):
         labels = labels.to(device)
 
         optimizer.zero_grad()
-        loss = mae(images, mask_ratio)
+        loss = mae(images, mask_ratio).sum()
         loss.backward()
         optimizer.step()
 
@@ -117,7 +104,7 @@ for epoch in range(num_epochs):
             images = images.to(device)
             labels = labels.to(device)
 
-            loss = mae(images, mask_ratio)
+            loss = mae(images, mask_ratio).sum()
 
             test_loss += loss.item() * images.shape[0]
             test_total += images.shape[0]
@@ -127,28 +114,12 @@ for epoch in range(num_epochs):
     print(f'[{epoch + 1:2d}] train loss: {train_loss:.3f} | test_loss: {test_loss:.3f}')
 
     if test_loss <= min(test_losses):
-        torch.save({'vit_state_dict' : mae.state_dict(), 
-                    'patch_dim' : patch_dim,
-                    'image_dim' : image_dim,
-                    'encoder_num_layers' : encoder_num_layers,
-                    'encoder_num_heads' : encoder_num_heads,
-                    'encoder_embed_dim' : encoder_embed_dim,
-                    'decoder_num_layers' : decoder_num_layers,
-                    'decoder_num_heads' : decoder_num_heads,
-                    'decoder_embed_dim' : decoder_embed_dim,
-                    'dropout' : dropout,
-                    'batch_size' : batch_size,
-                    'learning_rate' : learning_rate, 
-                    'num_epochs' : num_epochs,
-                    'weight_decay' : weight_decay,
-                    'warmup_fraction' : warmup_fraction},
-                   f"./SSL-Vision/mae_timm-2.pth" 
-                  )
+        torch.save({'mae_state_dict' : mae.module.state_dict()}, f"./SSL-Vision/mae_timm.pth")
     
     if (epoch + 1) % 25 == 0:
         with torch.no_grad():
             image_samples, _ = next(iter(testloader))
-            masked_images, reconstructed = mae.recover_reconstructed(image_samples.to(device), mask_ratio)
+            masked_images, reconstructed = mae.module.recover_reconstructed(image_samples.to(device), mask_ratio)
             image_samples = image_samples.permute(0, 2, 3, 1).cpu()
             masked_images = masked_images.permute(0, 2, 3, 1).detach().cpu()
             reconstructed = reconstructed.permute(0, 2, 3, 1).detach().cpu()
@@ -167,9 +138,9 @@ for epoch in range(num_epochs):
             for i, ax in enumerate(axes[2::3]):
                 ax.imshow(reconstructed[i].numpy())
             fig.tight_layout()
-            fig.savefig(f"./SSL-Vision/mae_results-2/epoch_{epoch + 1}.png")
+            fig.savefig(f"./SSL-Vision/mae_results-dp/epoch_{epoch + 1}.png")
             plt.close(fig)
     
-    wandb.log({"train_loss": train_loss, "test_loss": test_loss, "lr": scheduler.get_lr(), "epoch": epoch + 1})
+    wandb.log({"train_loss": train_loss, "test_loss": test_loss, "epoch": epoch + 1})
 
 print('Finished Training')

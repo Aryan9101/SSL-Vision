@@ -6,7 +6,8 @@ https://github.com/facebookresearch/mae
 import torch
 import torch.nn as nn
 
-from timm.models.vision_transformer import PatchEmbed, Block
+from timm.models.vision_transformer import VisionTransformer, PatchEmbed, Block
+
 
 class ViTLayer(nn.Module):
     def __init__(self, num_heads, embed_dim, encoder_mlp_hidden, dropout=0.1):
@@ -75,9 +76,8 @@ class MAE_Timm(nn.Module):
     def __init__(self, patch_dim, image_dim,
                  encoder_num_layers, encoder_num_heads, encoder_embed_dim, 
                  decoder_num_layers, decoder_num_heads, decoder_embed_dim,
-                 dropout, device):
+                 mlp_ratio, dropout):
         super().__init__()
-        self.device = device
         self.patch_dim = patch_dim
         self.image_dim = image_dim
         self.num_patches = (image_dim // patch_dim) * (image_dim // patch_dim)
@@ -90,7 +90,7 @@ class MAE_Timm(nn.Module):
         self.encoder_num_layers = encoder_num_layers
         self.encoder_layers = nn.ModuleList([])
         for _ in range(self.encoder_num_layers):
-            self.encoder_layers.append(Block(encoder_embed_dim, encoder_num_heads, 4, qkv_bias=False, drop=dropout, attn_drop=dropout))
+            self.encoder_layers.append(Block(encoder_embed_dim, encoder_num_heads, mlp_ratio=mlp_ratio, qkv_bias=False, drop=dropout, attn_drop=dropout))
 
         self.encoder_layernorm = nn.LayerNorm(encoder_embed_dim)
 
@@ -101,7 +101,7 @@ class MAE_Timm(nn.Module):
         self.decoder_num_layers = decoder_num_layers
         self.decoder_layers = nn.ModuleList([])
         for _ in range(self.decoder_num_layers):
-            self.decoder_layers.append(Block(decoder_embed_dim, decoder_num_heads, 4, qkv_bias=False, drop=dropout, attn_drop=dropout))
+            self.decoder_layers.append(Block(decoder_embed_dim, decoder_num_heads, mlp_ratio=mlp_ratio, qkv_bias=False, drop=dropout, attn_drop=dropout))
 
         self.decoder_layernorm = nn.LayerNorm(decoder_embed_dim)
         self.image_projection = nn.Linear(decoder_embed_dim, self.input_dim)
@@ -141,13 +141,13 @@ class MAE_Timm(nn.Module):
         patch_embeddings = self.patch_embedding(images) + self.encoder_position_embedding[:, 1:]
         N, _, D = patch_embeddings.shape
         
-        rand = torch.rand(N, self.num_patches).to(self.device)
+        rand = torch.rand(N, self.num_patches).to(images.device)
         idx_shuffle = torch.argsort(rand, dim=1)
         idx_unshuffle = torch.argsort(idx_shuffle, dim=1)
         
         keep = int(self.num_patches * (1 - mask_ratio))
         
-        mask = torch.ones(N, self.num_patches).to(self.device)
+        mask = torch.ones(N, self.num_patches).to(images.device)
         mask[:, keep:] = 0
         mask = torch.gather(mask, dim=1, index=idx_unshuffle)
 
@@ -192,7 +192,7 @@ class MAE_Timm(nn.Module):
         loss = loss.mean(dim=-1)
 
         mask = 1 - mask
-        loss = (loss * mask).sum() / mask.sum()
+        loss = (loss * mask).sum(dim=1) / mask.sum()
         return loss
 
     def recover_reconstructed(self, images, mask_ratio):
@@ -257,3 +257,73 @@ class MAE_Classifier(nn.Module):
         mae_embeds = self.mae.embeddings(images)
         latent = self.bn(mae_embeds)
         return latent, self.linear(latent)
+
+def get_vit_tiny(num_classes=10, patch_dim=4, image_dim=32):
+    return ViT(patch_dim=patch_dim, image_dim=image_dim, num_layers=12, num_heads=3, 
+               embed_dim=192, encoder_mlp_hidden=768, num_classes=num_classes, dropout=0.1)
+
+def get_vit_small(num_classes=10, patch_dim=4, image_dim=32):
+    return ViT(patch_dim=patch_dim, image_dim=image_dim, num_layers=12, num_heads=6, 
+               embed_dim=384, encoder_mlp_hidden=1536, num_classes=num_classes, dropout=0.1)
+
+def get_vit_base(num_classes=10, patch_dim=4, image_dim=32):
+    return ViT(patch_dim=patch_dim, image_dim=image_dim, num_layers=12, num_heads=12, 
+               embed_dim=768, encoder_mlp_hidden=3072, num_classes=num_classes, dropout=0.1)
+
+def get_vit_large(num_classes=10, patch_dim=4, image_dim=32):
+    return ViT(patch_dim=patch_dim, image_dim=image_dim, num_layers=24, num_heads=16, 
+               embed_dim=1024, encoder_mlp_hidden=4096, num_classes=num_classes, dropout=0.1)
+
+def get_vit_huge(num_classes=10, patch_dim=4, image_dim=32):
+    return ViT(patch_dim=patch_dim, image_dim=image_dim, num_layers=32, num_heads=16, 
+               embed_dim=1280, encoder_mlp_hidden=5120, num_classes=num_classes, dropout=0.1)
+
+def get_vit_tiny_timm(num_classes=10, patch_dim=4, image_dim=32):
+    return VisionTransformer(img_size=image_dim, patch_size=patch_dim, num_classes=num_classes, embed_dim=192, 
+                             depth=12, num_heads=3, mlp_ratio=4, qkv_bias=False, drop_rate=0.1, attn_drop_rate=0.1)
+
+def get_vit_small_timm(num_classes=10, patch_dim=4, image_dim=32):
+    return VisionTransformer(img_size=image_dim, patch_size=patch_dim, num_classes=num_classes, embed_dim=384, 
+                             depth=12, num_heads=6, mlp_ratio=4, qkv_bias=False, drop_rate=0.1, attn_drop_rate=0.1)
+
+def get_vit_base_timm(num_classes=10, patch_dim=4, image_dim=32):
+    return VisionTransformer(img_size=image_dim, patch_size=patch_dim, num_classes=num_classes, embed_dim=768, 
+                             depth=12, num_heads=12, mlp_ratio=4, qkv_bias=False, drop_rate=0.1, attn_drop_rate=0.1)
+
+def get_vit_large_timm(num_classes=10, patch_dim=4, image_dim=32):
+    return VisionTransformer(img_size=image_dim, patch_size=patch_dim, num_classes=num_classes, embed_dim=1024, 
+                             depth=24, num_heads=16, mlp_ratio=4, qkv_bias=False, drop_rate=0.1, attn_drop_rate=0.1)
+
+def get_vit_huge_timm(num_classes=10, patch_dim=4, image_dim=32):
+    return VisionTransformer(img_size=image_dim, patch_size=patch_dim, num_classes=num_classes, embed_dim=1280, 
+                             depth=32, num_heads=16, mlp_ratio=4, qkv_bias=False, drop_rate=0.1, attn_drop_rate=0.1)
+
+def get_mae_tiny(patch_dim=2, image_dim=32):
+    return MAE_Timm(patch_dim=patch_dim, image_dim=image_dim, 
+                    encoder_num_layers=12, encoder_num_heads=3, encoder_embed_dim=192,
+                    decoder_num_layers=4, decoder_num_heads=4, decoder_embed_dim=192,
+                    mlp_ratio=4, dropout=0.1)
+
+def get_mae_small(patch_dim=2, image_dim=32):
+    return MAE_Timm(patch_dim=patch_dim, image_dim=image_dim, 
+                    encoder_num_layers=12, encoder_num_heads=6, encoder_embed_dim=384,
+                    decoder_num_layers=4, decoder_num_heads=8, decoder_embed_dim=256,
+                    mlp_ratio=4, dropout=0.1)
+
+def get_mae_base(patch_dim=2, image_dim=32):
+    return MAE_Timm(patch_dim=patch_dim, image_dim=image_dim, 
+                    encoder_num_layers=12, encoder_num_heads=12, encoder_embed_dim=768,
+                    decoder_num_layers=8, decoder_num_heads=16, decoder_embed_dim=512,
+                    mlp_ratio=4, dropout=0.1)
+
+def get_mae_large(patch_dim=2, image_dim=32):
+    return MAE_Timm(patch_dim=patch_dim, image_dim=image_dim, 
+                    encoder_num_layers=24, encoder_num_heads=16, encoder_embed_dim=1024,
+                    decoder_num_layers=8, decoder_num_heads=16, decoder_embed_dim=512,
+                    mlp_ratio=4, dropout=0.1)
+
+def get_mae_huge(patch_dim=2, image_dim=32):
+    return MAE_Timm(patch_dim=patch_dim, image_dim=image_dim, 
+                    encoder_num_layers=32, encoder_num_heads=16, encoder_embed_dim=1280,
+                    decoder_num_layers=8, decoder_num_heads=16, decoder_embed_dim=512,
+                    mlp_ratio=4, dropout=0.1)

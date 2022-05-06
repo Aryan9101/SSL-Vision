@@ -10,7 +10,7 @@ import transformers
 
 import tqdm
 
-from models import MAE_Classifier, MAE_Timm
+from models import *
 
 import wandb
 
@@ -57,27 +57,12 @@ testloader = DataLoader(testset, batch_size=batch_size, shuffle=False, num_worke
 classes = ('plane', 'car', 'bird', 'cat',
            'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
-# MAE config
 checkpoint = torch.load(f"./SSL-Vision/mae_timm.pth")
-patch_dim = checkpoint['patch_dim']
-image_dim = checkpoint['image_dim']
-encoder_num_layers = checkpoint['encoder_num_layers']
-encoder_num_heads = checkpoint['encoder_num_heads']
-encoder_embed_dim = checkpoint['encoder_embed_dim']
-encoder_mlp_hidden = encoder_embed_dim * 4
-decoder_num_layers = checkpoint['decoder_num_layers']
-decoder_num_heads = checkpoint['decoder_num_heads']
-decoder_embed_dim = checkpoint['decoder_embed_dim']
-decoder_mlp_hidden = decoder_embed_dim * 4
-dropout = checkpoint['dropout']
 
-mae = MAE_Timm(patch_dim, image_dim, 
-               encoder_num_layers, encoder_num_heads, encoder_embed_dim,
-               decoder_num_heads, decoder_num_layers, decoder_embed_dim,
-               dropout, device).to(device)
-mae.load_state_dict(checkpoint['vit_state_dict'])
+mae = get_mae_small().to(device)
+mae.load_state_dict(checkpoint['mae_state_dict'])
 
-mae_classifier = MAE_Classifier(mae, encoder_embed_dim, len(classes), fine_tune=True).to(device)
+mae_classifier = MAE_Classifier(mae, 384, len(classes), fine_tune=True).to(device)
 
 learning_rate = 5e-4 * batch_size / 256
 num_epochs = 30

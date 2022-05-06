@@ -11,8 +11,7 @@ import transformers
 import math
 import tqdm
 
-from models import ViT
-from timm.models.vision_transformer import VisionTransformer
+from models import *
 
 import wandb
 
@@ -48,7 +47,7 @@ class Cifar10Dataset(Dataset):
         img = self.transform(img)
         return img, label
 
-batch_size = 128
+batch_size = 512
 
 trainset = Cifar10Dataset(True)
 trainloader = DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=2)
@@ -59,20 +58,8 @@ testloader = DataLoader(testset, batch_size=batch_size, shuffle=False, num_worke
 classes = ('plane', 'car', 'bird', 'cat',
            'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
-# Timm ViT config
-patch_dim = 4
-image_dim = 32
-num_layers = 12
-num_heads = 6
-embed_dim = 384
-encoder_mlp_hidden = embed_dim * 4
-num_classes = len(classes)
-dropout = 0.1
-
-vit = VisionTransformer(img_size=image_dim, patch_size=patch_dim, in_chans=3, num_classes=num_classes, 
-                        embed_dim=embed_dim, depth=num_layers, num_heads=num_heads, mlp_ratio=4, qkv_bias=False, 
-                        drop_rate=dropout, attn_drop_rate=dropout).to(device)
-# vit = ViT(patch_dim, image_dim, num_layers, num_heads, embed_dim, encoder_mlp_hidden, num_classes, dropout).to(device)
+vit = get_vit_small_timm().to(device)
+vit = torch.nn.DataParallel(vit)
 
 learning_rate = 5e-4 * batch_size / 256
 num_epochs = 30
@@ -134,22 +121,7 @@ for epoch in range(num_epochs):
     print(f'[{epoch + 1:2d}] train loss: {train_loss:.3f} | train accuracy: {train_acc:.3f} | test_loss: {test_loss:.3f} | test_accuracy: {test_acc:.3f}')
 
     if test_loss <= min(test_losses):
-        torch.save({'vit_state_dict' : vit.state_dict(), 
-                    'patch_dim' : patch_dim,
-                    'image_dim' : image_dim,
-                    'num_layers' : num_layers,
-                    'num_heads' : num_heads,
-                    'embed_dim' : embed_dim,
-                    'encoder_mlp_hidden' : encoder_mlp_hidden,
-                    'num_classes' : num_classes,
-                    'dropout' : dropout,
-                    'batch_size' : batch_size,
-                    'learning_rate' : learning_rate, 
-                    'num_epochs' : num_epochs,
-                    'weight_decay' : weight_decay,
-                    'warmup_fraction' : warmup_fraction},
-                   f"./SSL-Vision/vit_timm.pth" 
-                  )
+        torch.save({'vit_state_dict' : vit.module.state_dict()}, f"./SSL-Vision/vit_.pth")
 
     wandb.log({"train_loss": train_loss, "test_loss": test_loss, "train_accuracy": train_acc, "test_accuracy": test_acc, "epoch": epoch + 1})
 
